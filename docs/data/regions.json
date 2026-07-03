@@ -1,0 +1,32 @@
+[
+  {
+    "region": "강남역",
+    "radius_m": 300,
+    "collected_at": "2026-07-02 20:18:36"
+  },
+  {
+    "region": "목동역",
+    "radius_m": 500,
+    "collected_at": "2026-07-03 01:41:58"
+  },
+  {
+    "region": "성수역",
+    "radius_m": 150,
+    "collected_at": "2026-07-02 22:01:15"
+  },
+  {
+    "region": "신월동",
+    "radius_m": 300,
+    "collected_at": "2026-07-03 11:17:15"
+  },
+  {
+    "region": "오목교역",
+    "radius_m": 500,
+    "collected_at": "2026-07-03 12:07:23"
+  },
+  {
+    "region": "홍대입구역",
+    "radius_m": 300,
+    "collected_at": "2026-07-02 21:55:54"
+  }
+]

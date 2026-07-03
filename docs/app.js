@@ -1,0 +1,548 @@
+// 찐 맛집 찾기 — 뷰어
+// 수집된 JSON만 읽어 동작한다 (실시간 API 호출 없음). 지역은 드롭다운으로 전환.
+const REGIONS_URL = "data/regions.json";
+const dataUrl = region => `data/restaurants_${region}.json?t=${Date.now()}`;
+
+let map, clusterer, infoWindow;
+let allPlaces = [];        // 전체 데이터
+let markers = {};          // kakao_id -> marker
+let pinnedMarkers = [];    // 클러스터 제외 마커(찐후보/의심) — 항상 지도에 직접 표시
+let activeCats = new Set();     // 켜진 카테고리 필터 (비어있으면 전체)
+let activeVerdicts = new Set(); // 켜진 판정 필터 (비어있으면 전체)
+
+const VERDICT_ORDER = ["찐후보", "좋음", "과대평가의심", "보통", "표본부족", "정보없음"];
+const markerImageCache = {};
+
+// 판정별 마커: 모두 동일한 물방울 핀, 색상만 판정에 따라 다름
+function markerImage(verdict, color, count = 1) {
+  const key = color + "|" + count;
+  if (markerImageCache[key]) return markerImageCache[key];
+  const w = 26, h = 36;
+  // 겹침 그룹(count>1)은 핀 머리에 개수 표시, 단일은 흰 점
+  const head = count > 1
+    ? `<circle cx="13" cy="13" r="7.5" fill="white" fill-opacity="0.95"/>
+       <text x="13" y="17" text-anchor="middle" fill="${color}"
+             font-size="11" font-weight="bold" font-family="sans-serif">${count > 99 ? "99" : count}</text>`
+    : `<circle cx="13" cy="13" r="4.5" fill="white" fill-opacity="0.9"/>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 26 36">
+    <path d="M13 1C6.4 1 1 6.4 1 13c0 9 12 22 12 22s12-13 12-22C25 6.4 19.6 1 13 1z"
+          fill="${color}" stroke="white" stroke-width="2"/>
+    ${head}
+  </svg>`;
+  markerImageCache[key] = new kakao.maps.MarkerImage(
+    "data:image/svg+xml;charset=utf-8," + encodeURIComponent(svg),
+    new kakao.maps.Size(w, h), { offset: new kakao.maps.Point(13, 35) });
+  return markerImageCache[key];
+}
+
+// 카테고리 대분류 추출: "음식점 > 한식 > 국밥" -> "한식"
+function midCat(p) {
+  const parts = p.category.split(" > ");
+  return parts.length > 1 ? parts[1] : parts[0];
+}
+
+// 세부 분류: 가장 구체적인 마지막 단계 ("음식점 > 술집 > 일본식주점" -> "일본식주점")
+// 단, 마지막 단계가 브랜드명(가게 이름에 포함: "공차 강남역점" > "공차")이면 한 단계 위를 쓴다.
+function fineCat(p) {
+  const parts = p.category.split(" > ");
+  let i = parts.length - 1;
+  if (i > 1 && p.name.includes(parts[i])) i -= 1;
+  return parts[i] || midCat(p);
+}
+
+let radiusCircle = null;
+
+async function init() {
+  // 지역 목록 → 드롭다운
+  const regions = await (await fetch(REGIONS_URL)).json();
+  const sel = document.getElementById("regionSel");
+  regions.forEach(r => {
+    const opt = document.createElement("option");
+    opt.value = r.region;
+    opt.textContent = `${r.region} (반경 ${r.radius_m}m)`;
+    sel.appendChild(opt);
+  });
+  sel.onchange = () => loadRegion(sel.value);
+
+  // 지도는 한 번만 생성 (중심은 지역 로드 때 이동)
+  map = new kakao.maps.Map(document.getElementById("map"),
+                           { center: new kakao.maps.LatLng(37.5, 127.0), level: 4 });
+  clusterer = new kakao.maps.MarkerClusterer({
+    map, averageCenter: true, minLevel: 3, disableClickZoom: false,
+  });
+  infoWindow = new kakao.maps.InfoWindow({ zIndex: 10 });
+
+  if (regions.length) loadRegion(regions[0].region);
+}
+
+async function loadRegion(region) {
+  const data = await (await fetch(dataUrl(region))).json();
+  allPlaces = data.places;
+
+  document.getElementById("meta").textContent =
+    `${data.region} 반경 ${data.radius_m}m · ${data.count}곳 · 수집 ${data.collected_at}`;
+
+  const center = new kakao.maps.LatLng(data.center.lat, data.center.lon);
+  map.setCenter(center);
+  map.setLevel(4);
+
+  // 수집 반경 원 교체
+  if (radiusCircle) radiusCircle.setMap(null);
+  radiusCircle = new kakao.maps.Circle({
+    map, center, radius: data.radius_m,
+    strokeWeight: 2, strokeColor: "#2f6fdd", strokeOpacity: 0.7,
+    fillColor: "#2f6fdd", fillOpacity: 0.05,
+  });
+
+  // 필터 초기화 후 재구성
+  activeCats = new Set();
+  activeVerdicts = new Set();
+  document.getElementById("verdicts").innerHTML = "";
+  document.getElementById("filters").innerHTML = "";
+  infoWindow.close();
+  openedInfoId = null;
+  buildVerdictFilters();
+  buildFilters();
+  render();
+}
+
+function buildVerdictFilters() {
+  const counts = {};
+  allPlaces.forEach(p => {
+    const v = p.analysis ? p.analysis.verdict : "정보없음";
+    counts[v] = (counts[v] || 0) + 1;
+  });
+  const box = document.getElementById("verdicts");
+  VERDICT_ORDER.filter(v => counts[v]).forEach(v => {
+    const color = (allPlaces.find(p => p.analysis && p.analysis.verdict === v) || {})
+      .analysis?.color || "#adb5bd";
+    const el = document.createElement("span");
+    el.className = "chip";
+    el.innerHTML = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:4px"></span>${v} ${counts[v]}`;
+    el.onclick = () => {
+      activeVerdicts.has(v) ? activeVerdicts.delete(v) : activeVerdicts.add(v);
+      el.classList.toggle("on");
+      render();
+    };
+    box.appendChild(el);
+  });
+}
+
+function buildFilters() {
+  // 많은 순으로 카테고리 칩 생성
+  const counts = {};
+  allPlaces.forEach(p => { const c = midCat(p); counts[c] = (counts[c] || 0) + 1; });
+  const cats = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+
+  const box = document.getElementById("filters");
+  cats.forEach(cat => {
+    const el = document.createElement("span");
+    el.className = "chip";
+    el.textContent = `${cat} ${counts[cat]}`;
+    el.onclick = () => {
+      activeCats.has(cat) ? activeCats.delete(cat) : activeCats.add(cat);
+      el.classList.toggle("on");
+      render();
+    };
+    box.appendChild(el);
+  });
+}
+
+function visiblePlaces() {
+  return allPlaces.filter(p => {
+    if (activeCats.size > 0 && !activeCats.has(midCat(p))) return false;
+    if (activeVerdicts.size > 0) {
+      const v = p.analysis ? p.analysis.verdict : "정보없음";
+      if (!activeVerdicts.has(v)) return false;
+    }
+    return true;
+  });
+}
+
+function render() {
+  const places = visiblePlaces();
+  // 찐후보 필터만 켜져 있으면 찐점수순, 그 외에는 거리순
+  const jjinSort = activeVerdicts.size >= 1 &&
+    [...activeVerdicts].every(v => v === "찐후보" || v === "좋음");
+  if (jjinSort) {
+    places.sort((a, b) => (b.analysis?.jjin || 0) - (a.analysis?.jjin || 0));
+  } else {
+    places.sort((a, b) => a.dist_m - b.dist_m);
+  }
+  document.getElementById("count").textContent =
+    `표시 중: ${places.length}곳 (${jjinSort ? "찐점수순" : "거리순"})`;
+
+  // 마커: 같은 위치(약 11m 격자)의 식당들을 그룹 마커 하나로 합침
+  // 그룹 대표 판정(우선순위 최상)의 색 + 개수 배지. 찐후보/의심 포함 그룹은 클러스터 제외.
+  clusterer.clear();
+  pinnedMarkers.forEach(m => m.setMap(null));
+  pinnedMarkers = [];
+  markers = {};
+  placeGroups = {};
+  const zOrder = { "찐후보": 4, "과대평가의심": 4, "좋음": 3, "보통": 2 };
+  const V_PRI = { "과대평가의심": 5, "찐후보": 4, "좋음": 3, "보통": 2, "표본부족": 1, "정보없음": 0 };
+  const vOf = p => p.analysis ? p.analysis.verdict : "정보없음";
+  const groups = {};
+  places.forEach(p => {
+    const key = p.lat.toFixed(4) + "," + p.lon.toFixed(4);
+    (groups[key] = groups[key] || []).push(p);
+  });
+  const clustered = [];
+  Object.values(groups).forEach(grp => {
+    grp.sort((a, b) => (V_PRI[vOf(b)] - V_PRI[vOf(a)]) ||
+                       ((b.analysis?.jjin || 0) - (a.analysis?.jjin || 0)));
+    const rep = grp[0];
+    const verdict = vOf(rep);
+    const color = rep.analysis ? rep.analysis.color : "#adb5bd";
+    const m = new kakao.maps.Marker({
+      position: new kakao.maps.LatLng(rep.lat, rep.lon),
+      title: grp.length > 1 ? `${rep.name} 외 ${grp.length - 1}곳` : rep.name,
+      image: markerImage(verdict, color, grp.length),
+      zIndex: zOrder[verdict] || 1,
+    });
+    kakao.maps.event.addListener(m, "click", () => openGroup(grp, 0));
+    grp.forEach(p => { markers[p.kakao_id] = m; placeGroups[p.kakao_id] = grp; });
+    if (verdict === "찐후보" || verdict === "과대평가의심") {
+      m.setMap(map);
+      pinnedMarkers.push(m);
+    } else {
+      clustered.push(m);
+    }
+  });
+  clusterer.addMarkers(clustered);
+
+  // 사이드바 목록
+  const list = document.getElementById("list");
+  list.innerHTML = "";
+  places.forEach(p => {
+    const div = document.createElement("div");
+    div.className = "item";
+    const dc = p.diningcode;
+    const an = p.analysis;
+    const badge = an
+      ? `<span style="color:${an.color};font-weight:bold">●&nbsp;${an.verdict}</span>`
+      : "";
+    const jjinTag = an && an.jjin != null
+      ? `<span style="color:#2b8a3e;font-weight:bold">찐 ${Math.round(an.jjin)}</span> · `
+      : "";
+    const nv = p.naver;
+    const nvTag = nv && nv.score
+      ? ` · <span style="color:#03c75a;font-weight:bold">N★${nv.score}</span>(${nv.review_total ?? "?"})`
+      : "";
+    const dcLine = (dc
+      ? `${jjinTag}<span style="color:#d9480f;font-weight:bold">DC ${dc.score}</span>
+         · ★${dc.user_score ?? "-"}${an && an.adj_star ? `→<b>${an.adj_star}</b>` : ""} (${dc.review_cnt ?? 0})`
+      : `<span style="color:#aaa">다이닝코드 정보 없음</span>`) + nvTag;
+    div.innerHTML = `<div class="nm">${p.name}<span class="cattag">${fineCat(p)}</span> ${badge}</div>
+      <div class="sub">${p.dist_m}m · ${dcLine}</div>`;
+    div.onclick = () => {
+      map.panTo(new kakao.maps.LatLng(p.lat, p.lon));
+      openInfo(p);
+    };
+    list.appendChild(div);
+  });
+}
+
+let openedInfoId = null;   // 현재 열린 정보창의 kakao_id (재클릭 토글용)
+let placeGroups = {};      // kakao_id -> 같은 위치 그룹 배열
+let curGroup = null, curIdx = 0;   // 정보창 페이지 넘김 상태
+
+function infoHtml(p) {
+  const dc = p.diningcode;
+  const an = p.analysis;
+  const anBlock = an
+    ? `<div style="margin:4px 0; padding:4px 6px; border-left:3px solid ${an.color};
+                background:#f8f9fa; font-size:12px;">
+         <b style="color:${an.color}">${an.verdict}</b>
+         ${an.adj_star ? ` · 보정별점 ★${an.adj_star}` : ""}<br>
+         ${(an.reasons || []).map(r => "· " + r).join("<br>")}
+       </div>`
+    : "";
+  // 강점/약점 키워드 칩 (약점은 여과 없이 — 부정 리뷰는 조작이 드묾)
+  const rs = p.review_summary;
+  const chip = (label, cnt, color, bg) =>
+    `<span style="display:inline-block;margin:1px 2px;padding:1px 7px;border-radius:10px;
+      font-size:11px;color:${color};background:${bg};">${label} ×${cnt}</span>`;
+  const kwBlock = rs && (rs.pros.length || rs.cons.length)
+    ? `<div style="margin:4px 0;">
+         ${rs.pros.map(([k, c]) => chip("👍 " + k, c, "#2b8a3e", "#ebfbee")).join("")}
+         ${rs.cons.map(([k, c]) => chip("👎 " + k, c, "#c92a2a", "#fff5f5")).join("")}
+         <span style="font-size:10px;color:#999">(리뷰 ${rs.n_texts}건 분석)</span>
+       </div>`
+    : "";
+  const nv = p.naver;
+  const nvBlock = nv && nv.score
+    ? `<div style="margin:4px 0; padding:4px 6px; background:#e6fcf0; border-radius:4px;">
+         <b style="color:#03c75a">네이버 ★${nv.score}</b> · 리뷰 ${nv.review_total ?? "?"}개<br>
+         <span style="color:#666; font-size:11px">
+           영수증 인증 ${nv.receipt_ratio != null ? Math.round(nv.receipt_ratio * 100) + "%" : "-"} ·
+           재방문자 비율 ${nv.revisit_ratio != null ? Math.round(nv.revisit_ratio * 100) + "%" : "-"}
+           (최근 ${nv.sampled}건 기준)
+         </span>
+       </div>`
+    : "";
+  const dcBlock = dc
+    ? `<div style="margin:4px 0; padding:4px 6px; background:#fff4e6; border-radius:4px;">
+         <b style="color:#d9480f">다이닝코드 ${dc.score}점</b>
+         · 사용자 ★${dc.user_score ?? "-"} · 리뷰 ${dc.review_cnt ?? 0}개<br>
+         <span style="color:#888; font-size:11px">${(dc.keywords || []).slice(0, 4).join(" · ")}</span>
+       </div>`
+    : `<div style="margin:4px 0; color:#999">다이닝코드에 등록되지 않은 곳</div>`;
+  return `
+      <b>${p.name}</b><br>
+      <span style="color:#777">${p.category}</span><br>
+      ${anBlock}
+      ${kwBlock}
+      ${nvBlock}
+      ${dcBlock}
+      중심에서 ${p.dist_m}m ·
+      <a href="${p.kakao_url}" target="_blank">카카오맵</a>
+      ${dc ? `· <a href="https://www.diningcode.com/profile.php?rid=${dc.v_rid}" target="_blank">다이닝코드</a>` : ""}`;
+}
+
+function showGroupPage() {
+  const p = curGroup[curIdx];
+  // 같은 건물에 여러 곳이면 상단에 ◀ n/N ▶ 페이저 표시
+  const pager = curGroup.length > 1
+    ? `<div style="display:flex;align-items:center;justify-content:space-between;
+                 background:#f1f3f5;border-radius:6px;padding:2px 6px;margin-bottom:5px;">
+         <button onclick="window.__grpNav(-1)" style="border:none;background:none;
+                 font-size:15px;cursor:pointer;padding:2px 8px;">◀</button>
+         <span style="font-size:12px;color:#555">같은 위치 ${curIdx + 1} / ${curGroup.length}곳</span>
+         <button onclick="window.__grpNav(1)" style="border:none;background:none;
+                 font-size:15px;cursor:pointer;padding:2px 8px;">▶</button>
+       </div>`
+    : "";
+  infoWindow.setContent(
+    `<div style="padding:8px 12px; font-size:13px; min-width:220px; max-width:280px;">
+       ${pager}${infoHtml(p)}
+     </div>`);
+  infoWindow.open(map, markers[p.kakao_id]);
+  openedInfoId = p.kakao_id;
+}
+
+window.__grpNav = (d) => {
+  curIdx = (curIdx + d + curGroup.length) % curGroup.length;
+  showGroupPage();
+};
+
+function openGroup(grp, idx) {
+  const p = grp[idx];
+  if (openedInfoId === p.kakao_id) {   // 같은 항목 재클릭 → 닫기
+    infoWindow.close();
+    openedInfoId = null;
+    return;
+  }
+  curGroup = grp;
+  curIdx = idx;
+  showGroupPage();
+}
+
+function openInfo(p) {
+  const grp = placeGroups[p.kakao_id] || [p];
+  openGroup(grp, Math.max(grp.indexOf(p), 0));
+}
+
+// ---------- 새 지역 검색·수집 (서버 API 사용) ----------
+let selectedCandidate = null;
+let previewCircle = null;   // 수집 범위 미리보기 원
+
+// 선택한 후보 + 현재 반경으로 미리보기 원을 그리고, 원 전체가 보이게 지도를 맞춘다
+function updatePreviewCircle() {
+  if (!selectedCandidate) return;
+  const { lat, lon } = selectedCandidate;
+  const radius = currentRadius();
+  const center = new kakao.maps.LatLng(lat, lon);
+
+  if (previewCircle) previewCircle.setMap(null);
+  previewCircle = new kakao.maps.Circle({
+    map, center, radius,
+    strokeWeight: 3, strokeColor: "#f76707", strokeOpacity: 0.9,
+    strokeStyle: "dash",                       // 점선: 아직 수집 전임을 표시
+    fillColor: "#f76707", fillOpacity: 0.08,
+  });
+
+  // 원이 화면에 꽉 차게: 반경만큼 상하좌우로 벌린 경계로 지도 맞춤
+  const dLat = radius / 111320;
+  const dLon = radius / (111320 * Math.cos(lat * Math.PI / 180));
+  map.setBounds(new kakao.maps.LatLngBounds(
+    new kakao.maps.LatLng(lat - dLat, lon - dLon),
+    new kakao.maps.LatLng(lat + dLat, lon + dLon)));
+}
+
+function clearPreviewCircle() {
+  if (previewCircle) { previewCircle.setMap(null); previewCircle = null; }
+}
+
+async function searchRegion() {
+  const q = document.getElementById("q").value.trim();
+  if (!q) return;
+  const box = document.getElementById("qResults");
+  box.innerHTML = `<div class="sub" style="padding:4px">검색 중...</div>`;
+  try {
+    const res = await (await fetch(`/api/search?q=${encodeURIComponent(q)}`)).json();
+    box.innerHTML = "";
+    if (!res.candidates || res.candidates.length === 0) {
+      box.innerHTML = `<div class="sub" style="padding:4px">결과 없음</div>`;
+      return;
+    }
+    res.candidates.forEach(c => {
+      const div = document.createElement("div");
+      div.className = "item";
+      div.innerHTML = `<div class="nm" style="font-size:13px">${c.name}</div>
+        <div class="sub">${c.address}</div>`;
+      div.onclick = () => {
+        selectedCandidate = { ...c, label: q };
+        box.innerHTML = "";
+        document.getElementById("collectTarget").textContent =
+          `${c.name} 주변을 수집합니다`;
+        document.getElementById("collectPanel").style.display = "block";
+        updatePreviewCircle();   // 수집 범위 미리보기 원 표시 + 지도 맞춤
+      };
+      box.appendChild(div);
+    });
+  } catch (e) {
+    box.innerHTML = `<div class="sub" style="padding:4px">검색 실패: ${e}</div>`;
+  }
+}
+
+// 반경 프리셋: "직접 입력" 선택 시에만 숫자 입력칸 표시
+document.getElementById("radiusPreset").onchange = function () {
+  const custom = this.value === "custom";
+  document.getElementById("radiusInput").style.display = custom ? "inline-block" : "none";
+  document.getElementById("radiusUnit").style.display = custom ? "inline" : "none";
+  updatePreviewCircle();   // 반경 바뀌면 미리보기 원 갱신
+};
+document.getElementById("radiusInput").addEventListener("input", updatePreviewCircle);
+
+function currentRadius() {
+  const preset = document.getElementById("radiusPreset").value;
+  if (preset !== "custom") return parseInt(preset);
+  return parseInt(document.getElementById("radiusInput").value) || 300;
+}
+
+async function startCollect() {
+  if (!selectedCandidate) return;
+  const radius = currentRadius();
+  const res = await (await fetch("/api/collect", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ region: selectedCandidate.label, radius,
+                           lon: selectedCandidate.lon, lat: selectedCandidate.lat }),
+  })).json();
+  if (res.error) { alert(res.error); return; }
+  document.getElementById("collectPanel").style.display = "none";
+  clearPreviewCircle();   // 수집 시작: 점선 미리보기 제거 (완료 후 파란 실선 원이 표시됨)
+  pollCollect(res.region);
+}
+
+// 수집 단계: [스크립트명, 표시명, 진행 시작점, 구간 비중]
+const COLLECT_PHASES = [
+  ["kakao_places", "식당 목록 수집", 0.00, 0.10],
+  ["diningcode",   "다이닝코드 수집", 0.10, 0.72],
+  ["matcher",      "소스 매칭",      0.82, 0.05],
+  ["naver_merge",  "네이버 병합",    0.87, 0.04],
+  ["keywords",     "키워드 분석",    0.91, 0.04],
+  ["score",        "판별 계산",      0.95, 0.05],
+];
+
+function collectProgress(log) {
+  let phase = COLLECT_PHASES[0], frac = 0;
+  for (const ph of COLLECT_PHASES)
+    if (log.includes("===== " + ph[0])) phase = ph;
+  if (phase[0] === "diningcode") {
+    // "누적 X/Y" 마지막 값으로 구간 내 진행률 추정
+    const ms = [...log.matchAll(/누적 (\d+)\/(\d+)/g)];
+    if (ms.length) {
+      const [, x, y] = ms[ms.length - 1];
+      frac = Math.min(+x / Math.max(+y, 1), 1);
+    }
+  }
+  return { label: phase[1], pct: phase[2] + frac * phase[3] };
+}
+
+function fmtSec(s) {
+  s = Math.round(s);
+  return s >= 60 ? `${Math.floor(s / 60)}분 ${s % 60}초` : `${s}초`;
+}
+
+async function pollCollect(region) {
+  const prog = document.getElementById("progress");
+  prog.style.display = "block";
+  prog.innerHTML = `<div id="progressHead"><span class="spinner"></span>데이터 수집 중...</div>`;
+  const t0 = Date.now();
+  const timer = setInterval(async () => {
+    try {
+      const st = await (await fetch("/api/collect/status")).json();
+      const lines = (st.log || "").trim().split("\n");
+      const { label, pct } = collectProgress(st.log || "");
+      const elapsed = (Date.now() - t0) / 1000;
+      // 예상 남은 시간: 경과시간을 진행률로 외삽 (진행률 5% 미만이면 표시 보류)
+      const eta = pct >= 0.05 ? fmtSec(elapsed * (1 - pct) / pct) : "계산 중";
+      prog.innerHTML =
+        `<div id="progressHead"><span class="spinner"></span>` +
+        `[${region}] 데이터 수집 중 — ${label} ${(pct * 100).toFixed(0)}%<br>` +
+        `<span style="font-weight:normal">경과 ${fmtSec(elapsed)} · 예상 남은 시간 ${eta}</span></div>` +
+        lines.slice(-4).join("\n");
+      prog.scrollTop = prog.scrollHeight;
+      if (!st.running) {
+        clearInterval(timer);
+        if (st.exit_code === 0) {
+          prog.textContent = `[${region}] 수집 완료!`;
+          setTimeout(() => { prog.style.display = "none"; }, 3000);
+          await refreshRegions(region);   // 목록 갱신 + 새 지역으로 전환
+        } else {
+          prog.textContent += `\n[실패] exit=${st.exit_code} — 로그를 확인하세요`;
+        }
+      }
+    } catch (e) { /* 서버 일시 오류는 다음 폴링에서 회복 */ }
+  }, 3000);
+}
+
+async function refreshRegions(selectRegion) {
+  const regions = await (await fetch(REGIONS_URL + "?t=" + Date.now())).json();
+  const sel = document.getElementById("regionSel");
+  sel.innerHTML = "";
+  regions.forEach(r => {
+    const opt = document.createElement("option");
+    opt.value = r.region;
+    opt.textContent = `${r.region} (반경 ${r.radius_m}m)`;
+    sel.appendChild(opt);
+  });
+  if (selectRegion) { sel.value = selectRegion; loadRegion(selectRegion); }
+}
+
+// 모바일 하단 시트: 손잡이 탭으로 접힘 → 기본 → 펼침 순환
+document.getElementById("sheetToggle").onclick = () => {
+  const sb = document.getElementById("sidebar");
+  if (sb.classList.contains("collapsed")) {
+    sb.classList.remove("collapsed");               // 접힘 → 기본
+  } else if (sb.classList.contains("expanded")) {
+    sb.classList.remove("expanded");
+    sb.classList.add("collapsed");                  // 펼침 → 접힘
+  } else {
+    sb.classList.add("expanded");                   // 기본 → 펼침
+  }
+  // 지도 영역 크기가 바뀌므로 타일 재배치 (transition 종료 후)
+  setTimeout(() => map && map.relayout(), 300);
+};
+
+if (window.STATIC_MODE) {
+  // 정적 배포(조회 전용): 수집 관련 UI 숨김, 지역 요청 링크 표시
+  ["searchRow", "collectPanel", "progress"].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.style.display = "none";
+  });
+  if (window.REQUEST_FORM_URL) {
+    const row = document.getElementById("requestRow");
+    row.style.display = "block";
+    row.innerHTML = `🙋 <a href="${window.REQUEST_FORM_URL}" target="_blank">우리 동네도 조사해 달라고 요청하기</a>`;
+  }
+} else {
+  document.getElementById("qBtn").onclick = searchRegion;
+  document.getElementById("q").addEventListener("keydown",
+    e => { if (e.key === "Enter") searchRegion(); });
+  document.getElementById("collectBtn").onclick = startCollect;
+}
+
+kakao.maps.load(init);

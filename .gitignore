@@ -1,0 +1,12 @@
+# ── 공개 저장소(GitHub Pages 배포 전용) ──
+# docs/ 정제 배포본과 문서만 커밋한다. 수집 코드·원본 데이터·API 키는 로컬 전용.
+/*
+!docs/
+!.gitignore
+!README.md
+
+# 안전장치: 어떤 경우에도 커밋 금지
+config.json
+viewer/mapkey.js
+/data/
+__pycache__/
