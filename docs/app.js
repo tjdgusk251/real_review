@@ -54,7 +54,7 @@ let radiusCircle = null;
 
 async function init() {
   // 지역 목록 → 드롭다운
-  const regions = await (await fetch(REGIONS_URL)).json();
+  const regions = await (await fetch(REGIONS_URL + "?t=" + Date.now())).json();  // 캐시 우회
   const sel = document.getElementById("regionSel");
   regions.forEach(r => {
     const opt = document.createElement("option");
@@ -484,7 +484,7 @@ async function pollCollect(region) {
         `[${region}] 데이터 수집 중 — ${label} ${(pct * 100).toFixed(0)}%<br>` +
         `<span style="font-weight:normal">경과 ${fmtSec(elapsed)} · 예상 남은 시간 ${eta}</span></div>` +
         lines.slice(-4).join("\n");
-      prog.scrollTop = prog.scrollHeight;
+      // 자동 스크롤 없음 — 상단의 경과/예상 시간이 항상 보이게 유지
       if (!st.running) {
         clearInterval(timer);
         if (st.exit_code === 0) {
