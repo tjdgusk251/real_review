@@ -25,6 +25,11 @@
     "collected_at": "2026-07-03 12:07:23"
   },
   {
+    "region": "합정역",
+    "radius_m": 500,
+    "collected_at": "2026-07-03 16:06:38"
+  },
+  {
     "region": "홍대입구역",
     "radius_m": 300,
     "collected_at": "2026-07-02 21:55:54"
