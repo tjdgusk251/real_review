@@ -512,20 +512,55 @@ async function refreshRegions(selectRegion) {
   if (selectRegion) { sel.value = selectRegion; loadRegion(selectRegion); }
 }
 
-// 모바일 하단 시트: 손잡이 탭으로 접힘 → 기본 → 펼침 순환
-document.getElementById("sheetToggle").onclick = () => {
+// 모바일 하단 시트: 손잡이를 잡고 위아래로 드래그해 지도/목록 비율 자유 조절
+(function setupSheetDrag() {
+  const handle = document.getElementById("sheetToggle");
   const sb = document.getElementById("sidebar");
-  if (sb.classList.contains("collapsed")) {
-    sb.classList.remove("collapsed");               // 접힘 → 기본
-  } else if (sb.classList.contains("expanded")) {
-    sb.classList.remove("expanded");
-    sb.classList.add("collapsed");                  // 펼침 → 접힘
-  } else {
-    sb.classList.add("expanded");                   // 기본 → 펼침
+  const isMobile = () => window.matchMedia("(max-width: 768px)").matches;
+  let dragging = false, startY = 0, startH = 0, moved = false, relayoutTimer = null;
+
+  const pointY = e => (e.touches ? e.touches[0].clientY : e.clientY);
+  const clampH = h => Math.max(window.innerHeight * 0.12,
+                               Math.min(window.innerHeight * 0.88, h));
+
+  function onDown(e) {
+    if (!isMobile()) return;
+    dragging = true; moved = false;
+    startY = pointY(e); startH = sb.offsetHeight;
+    sb.classList.add("dragging");
+    sb.classList.remove("collapsed", "expanded");
+    e.preventDefault();
   }
-  // 지도 영역 크기가 바뀌므로 타일 재배치 (transition 종료 후)
-  setTimeout(() => map && map.relayout(), 300);
-};
+  function onMove(e) {
+    if (!dragging) return;
+    const dy = startY - pointY(e);          // 위로 끌면 커짐
+    if (Math.abs(dy) > 4) moved = true;
+    sb.style.height = clampH(startH + dy) + "px";
+    // 드래그 중에도 지도가 자연스럽게 따라오도록 가볍게 relayout (throttle)
+    if (!relayoutTimer) relayoutTimer = setTimeout(() => {
+      map && map.relayout(); relayoutTimer = null;
+    }, 60);
+    e.preventDefault();
+  }
+  function onUp() {
+    if (!dragging) return;
+    dragging = false;
+    sb.classList.remove("dragging");
+    // 움직임 없이 탭만 했으면: 접힘 ↔ 기본 간단 토글
+    if (!moved) sb.style.height = sb.offsetHeight < window.innerHeight * 0.25
+      ? window.innerHeight * 0.42 + "px" : window.innerHeight * 0.15 + "px";
+    map && map.relayout();
+  }
+
+  handle.addEventListener("touchstart", onDown, { passive: false });
+  handle.addEventListener("touchmove", onMove, { passive: false });
+  handle.addEventListener("touchend", onUp);
+  handle.addEventListener("mousedown", onDown);
+  window.addEventListener("mousemove", onMove);
+  window.addEventListener("mouseup", onUp);
+  // 데스크톱으로 넓어지면 인라인 높이 제거 (가로 레이아웃 복귀)
+  window.addEventListener("resize", () => { if (!isMobile()) sb.style.height = ""; });
+})();
 
 if (window.STATIC_MODE) {
   // 정적 배포(조회 전용): 수집 관련 UI 숨김, 지역 요청 링크 표시
