@@ -233,7 +233,9 @@ function render() {
       ? `${jjinTag}<span style="color:#d9480f;font-weight:bold">DC ${dc.score}</span>
          · ★${dc.user_score ?? "-"}${an && an.adj_star ? `→<b>${an.adj_star}</b>` : ""} (${dc.review_cnt ?? 0})`
       : `<span style="color:#aaa">다이닝코드 정보 없음</span>`) + nvTag;
-    div.innerHTML = `<div class="nm">${p.name}<span class="cattag">${fineCat(p)}</span> ${badge}</div>
+    const chainTag = an && an.franchise
+      ? `<span class="cattag" style="background:#e7f5ff;color:#1971c2">체인</span>` : "";
+    div.innerHTML = `<div class="nm">${p.name}<span class="cattag">${fineCat(p)}</span>${chainTag} ${badge}</div>
       <div class="sub">${p.dist_m}m · ${dcLine}</div>`;
     div.onclick = () => {
       map.panTo(new kakao.maps.LatLng(p.lat, p.lon));
