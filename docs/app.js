@@ -112,14 +112,19 @@ function buildVerdictFilters() {
     const v = p.analysis ? p.analysis.verdict : "정보없음";
     counts[v] = (counts[v] || 0) + 1;
   });
+  // 찐후보·좋음·과대평가의심은 0이어도 표시(없음을 명시), 나머지는 있을 때만
+  const ALWAYS = ["찐후보", "좋음", "과대평가의심"];
+  const VCOLOR = { "찐후보": "#2b8a3e", "좋음": "#74b816", "보통": "#4c6ef5",
+                   "과대평가의심": "#e03131", "표본부족": "#868e96", "정보없음": "#adb5bd" };
   const box = document.getElementById("verdicts");
-  VERDICT_ORDER.filter(v => counts[v]).forEach(v => {
-    const color = (allPlaces.find(p => p.analysis && p.analysis.verdict === v) || {})
-      .analysis?.color || "#adb5bd";
+  VERDICT_ORDER.filter(v => counts[v] || ALWAYS.includes(v)).forEach(v => {
+    const n = counts[v] || 0;
     const el = document.createElement("span");
     el.className = "chip";
-    el.innerHTML = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${color};margin-right:4px"></span>${v} ${counts[v]}`;
+    if (n === 0) el.style.opacity = "0.4";   // 없음: 흐리게, 클릭 무의미
+    el.innerHTML = `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${VCOLOR[v]};margin-right:4px"></span>${v} ${n}`;
     el.onclick = () => {
+      if (n === 0) return;
       activeVerdicts.has(v) ? activeVerdicts.delete(v) : activeVerdicts.add(v);
       el.classList.toggle("on");
       render();
