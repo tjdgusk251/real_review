@@ -443,29 +443,34 @@ async function startCollect() {
   pollCollect(res.region);
 }
 
-// 수집 단계: [스크립트명, 표시명, 진행 시작점, 구간 비중]
-const COLLECT_PHASES = [
-  ["kakao_places", "식당 목록 수집", 0.00, 0.10],
-  ["diningcode",   "다이닝코드 수집", 0.10, 0.72],
-  ["matcher",      "소스 매칭",      0.82, 0.05],
-  ["naver_merge",  "네이버 병합",    0.87, 0.04],
-  ["keywords",     "키워드 분석",    0.91, 0.04],
-  ["score",        "판별 계산",      0.95, 0.05],
-];
+// 단계별 진행 구간 [표시명, 시작점, 비중] — 네이버가 가장 오래 걸려 비중 최대
+const PHASE_RANGE = {
+  kakao:      ["식당 목록 수집",   0.00, 0.03],
+  diningcode: ["다이닝코드 수집",  0.03, 0.25],
+  matcher:    ["소스 매칭",       0.28, 0.02],
+  naver:      ["네이버 리뷰 수집", 0.30, 0.62],
+  post:       ["판별·정리",       0.92, 0.08],
+};
 
+// 로그를 훑어 마지막 단계와 그 안의 진행률(frac)을 구한다.
+// diningcode/naver 는 수집기가 내보내는 "[PCT] <phase> <done> <total>" 로 정밀 추정.
 function collectProgress(log) {
-  let phase = COLLECT_PHASES[0], frac = 0;
-  for (const ph of COLLECT_PHASES)
-    if (log.includes("===== " + ph[0])) phase = ph;
-  if (phase[0] === "diningcode") {
-    // "누적 X/Y" 마지막 값으로 구간 내 진행률 추정
-    const ms = [...log.matchAll(/누적 (\d+)\/(\d+)/g)];
-    if (ms.length) {
-      const [, x, y] = ms[ms.length - 1];
-      frac = Math.min(+x / Math.max(+y, 1), 1);
+  let key = "kakao", frac = 0;
+  for (const l of (log || "").split("\n")) {
+    if (l.includes("===== kakao")) { key = "kakao"; frac = 0; }
+    else if (l.includes("===== diningcode")) { key = "diningcode"; frac = 0; }
+    else if (l.includes("===== matcher")) { key = "matcher"; frac = 0; }
+    else if (l.includes("===== naver_place")) { key = "naver"; frac = 0; }
+    else if (l.includes("===== naver_merge") || l.includes("===== keywords")
+             || l.includes("===== score")) { key = "post"; frac = 0; }
+    const m = l.match(/\[PCT\] (\w+) (\d+) (\d+)/);
+    if (m && (m[1] === "diningcode" || m[1] === "naver")) {
+      key = m[1];
+      frac = +m[3] > 0 ? Math.min(+m[2] / +m[3], 1) : 0;
     }
   }
-  return { label: phase[1], pct: phase[2] + frac * phase[3] };
+  const [label, off, w] = PHASE_RANGE[key];
+  return { label, pct: off + frac * w };
 }
 
 function fmtSec(s) {
@@ -485,7 +490,7 @@ async function pollCollect(region) {
       const { label, pct } = collectProgress(st.log || "");
       const elapsed = (Date.now() - t0) / 1000;
       // 예상 남은 시간: 경과시간을 진행률로 외삽 (진행률 5% 미만이면 표시 보류)
-      const eta = pct >= 0.05 ? fmtSec(elapsed * (1 - pct) / pct) : "계산 중";
+      const eta = pct >= 0.02 ? fmtSec(elapsed * (1 - pct) / pct) : "계산 중";
       prog.innerHTML =
         `<div id="progressHead"><span class="spinner"></span>` +
         `[${region}] 데이터 수집 중 — ${label} ${(pct * 100).toFixed(0)}%<br>` +
