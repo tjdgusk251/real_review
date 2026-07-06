@@ -334,16 +334,11 @@ function requestRegionInput() {
 
 // 지역 조사 요청 → 정답/수집 목록에 축적
 async function requestRegion(query) {
-  const url = endpoint("region");
-  if (!url) { alert("건의 기능 준비 중입니다."); return; }
+  if (!endpoint("region")) { alert("건의 기능 준비 중입니다."); return; }
   const note = prompt(`"${query}" 지역 조사를 요청합니다. 남길 말이 있으면 적어주세요 (선택):`, "");
   if (note === null) return;   // 취소
   try {
-    await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
-      body: JSON.stringify({ query, note }),
-    });
+    await postSuggestion("region", { query, note });
     alert("요청이 접수됐습니다. 나중에 수집 목록에 반영됩니다.");
   } catch (e) {
     alert("요청 저장 실패");
@@ -356,23 +351,36 @@ function endpoint(kind) {
   return kind === "feedback" ? window.FEEDBACK_ENDPOINT : window.REGION_ENDPOINT;
 }
 
+// 건의 POST. 배포본(외부 Apps Script)은 CORS 우회를 위해 no-cors+text 로 전송.
+async function postSuggestion(kind, payload) {
+  const url = endpoint(kind);
+  if (!url) return false;
+  payload.kind = kind;
+  if (window.STATIC_MODE) {
+    // no-cors: 응답을 읽을 수 없으나 요청은 전달됨 (Apps Script 저장 목적)
+    await fetch(url, { method: "POST", mode: "no-cors", body: JSON.stringify(payload) });
+  } else {
+    await fetch(url, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+  return true;
+}
+
 // 판정 피드백 전송 → 정답 표본으로 축적
 async function sendFeedback(kakaoId, userSays) {
   const p = allPlaces.find(x => x.kakao_id === kakaoId);
   const box = document.getElementById("fb-" + kakaoId);
-  const url = endpoint("feedback");
-  if (!url) { if (box) box.innerHTML = "건의 기능 준비 중"; return; }
   try {
-    await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Accept": "application/json" },
-      body: JSON.stringify({
-        kakao_id: kakaoId, name: p.name, region: currentRegion,
-        category: p.category, verdict_now: p.analysis ? p.analysis.verdict : null,
-        jjin: p.analysis ? p.analysis.jjin : null, user_says: userSays,
-      }),
+    const ok = await postSuggestion("feedback", {
+      kakao_id: kakaoId, name: p.name, region: currentRegion,
+      category: p.category, verdict_now: p.analysis ? p.analysis.verdict : null,
+      jjin: p.analysis ? p.analysis.jjin : null, user_says: userSays,
     });
-    if (box) box.innerHTML = `<span style="color:#2b8a3e">평가 저장됨 (${userSays}) — 고마워요!</span>`;
+    if (box) box.innerHTML = ok
+      ? `<span style="color:#2b8a3e">평가 저장됨 (${userSays}) — 고마워요!</span>`
+      : "건의 기능 준비 중";
   } catch (e) {
     if (box) box.innerHTML = `<span style="color:#c92a2a">저장 실패</span>`;
   }
