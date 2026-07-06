@@ -298,8 +298,10 @@ function infoHtml(p) {
          <span style="color:#888; font-size:11px">${(dc.keywords || []).slice(0, 4).join(" · ")}</span>
        </div>`
     : `<div style="margin:4px 0; color:#999">다이닝코드에 등록되지 않은 곳</div>`;
-  // 판정 피드백 버튼 (내 평가를 정답 데이터로 축적) — 배포본(서버 없음)에선 숨김
-  const fb = window.STATIC_MODE ? "" : `
+  // 판정 피드백 버튼 (내 평가를 정답 데이터로 축적)
+  // 로컬: 서버 API / 배포본: 외부 엔드포인트(설정 시). 둘 다 없으면 숨김.
+  const fbAvailable = !window.STATIC_MODE || window.FEEDBACK_ENDPOINT;
+  const fb = !fbAvailable ? "" : `
       <div style="margin-top:6px;padding-top:6px;border-top:1px solid #eee;font-size:11px;"
            id="fb-${p.kakao_id}">
         내가 먹어본 평가:<br>
@@ -321,28 +323,49 @@ function infoHtml(p) {
       ${fb}`;
 }
 
-// 지역 조사 요청 → 서버가 data/region_requests.jsonl 에 축적
+// 배포본: 입력창의 지역명으로 요청
+function requestRegionInput() {
+  const el = document.getElementById("regReq");
+  const q = (el.value || "").trim();
+  if (!q) { el.focus(); return; }
+  requestRegion(q);
+  el.value = "";
+}
+
+// 지역 조사 요청 → 정답/수집 목록에 축적
 async function requestRegion(query) {
+  const url = endpoint("region");
+  if (!url) { alert("건의 기능 준비 중입니다."); return; }
   const note = prompt(`"${query}" 지역 조사를 요청합니다. 남길 말이 있으면 적어주세요 (선택):`, "");
   if (note === null) return;   // 취소
   try {
-    await fetch("/api/region_request", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify({ query, note }),
     });
     alert("요청이 접수됐습니다. 나중에 수집 목록에 반영됩니다.");
   } catch (e) {
-    alert("요청 저장 실패 (서버 꺼짐?)");
+    alert("요청 저장 실패");
   }
 }
 
-// 판정 피드백 전송 → 서버가 data/feedback.jsonl 에 축적 (정답 표본)
+// 건의 전송 대상: 로컬은 서버 API, 배포본은 외부 엔드포인트(설정 시)
+function endpoint(kind) {
+  if (!window.STATIC_MODE) return kind === "feedback" ? "/api/feedback" : "/api/region_request";
+  return kind === "feedback" ? window.FEEDBACK_ENDPOINT : window.REGION_ENDPOINT;
+}
+
+// 판정 피드백 전송 → 정답 표본으로 축적
 async function sendFeedback(kakaoId, userSays) {
   const p = allPlaces.find(x => x.kakao_id === kakaoId);
   const box = document.getElementById("fb-" + kakaoId);
+  const url = endpoint("feedback");
+  if (!url) { if (box) box.innerHTML = "건의 기능 준비 중"; return; }
   try {
-    await fetch("/api/feedback", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Accept": "application/json" },
       body: JSON.stringify({
         kakao_id: kakaoId, name: p.name, region: currentRegion,
         category: p.category, verdict_now: p.analysis ? p.analysis.verdict : null,
@@ -351,7 +374,7 @@ async function sendFeedback(kakaoId, userSays) {
     });
     if (box) box.innerHTML = `<span style="color:#2b8a3e">평가 저장됨 (${userSays}) — 고마워요!</span>`;
   } catch (e) {
-    if (box) box.innerHTML = `<span style="color:#c92a2a">저장 실패 (서버 꺼짐?)</span>`;
+    if (box) box.innerHTML = `<span style="color:#c92a2a">저장 실패</span>`;
   }
 }
 
@@ -573,14 +596,13 @@ async function pollCollect(region) {
       const lines = (st.log || "").trim().split("\n");
       const { label, pct } = collectProgress(st.log || "");
       const elapsed = (Date.now() - t0) / 1000;
-      // 예상 남은 시간: 경과시간을 진행률로 외삽 (진행률 5% 미만이면 표시 보류)
-      const eta = pct >= 0.02 ? fmtSec(elapsed * (1 - pct) / pct) : "계산 중";
+      // 예상 시간은 부정확해 표시하지 않음 — 단계 + 퍼센트 + 경과시간만
       prog.innerHTML =
         `<div id="progressHead"><span class="spinner"></span>` +
-        `[${region}] 데이터 수집 중 — ${label} ${(pct * 100).toFixed(0)}%<br>` +
-        `<span style="font-weight:normal">경과 ${fmtSec(elapsed)} · 예상 남은 시간 ${eta}</span></div>` +
+        `[${region}] ${label} ${(pct * 100).toFixed(0)}%` +
+        `<span style="font-weight:normal;color:#888"> · 경과 ${fmtSec(elapsed)}</span></div>` +
         lines.slice(-4).join("\n");
-      // 자동 스크롤 없음 — 상단의 경과/예상 시간이 항상 보이게 유지
+      // 자동 스크롤 없음 — 상단의 단계·경과가 항상 보이게 유지
       if (!st.running) {
         clearInterval(timer);
         if (st.exit_code === 0) {
@@ -659,15 +681,25 @@ async function refreshRegions(selectRegion) {
 })();
 
 if (window.STATIC_MODE) {
-  // 정적 배포(조회 전용): 수집 관련 UI 숨김, 지역 요청 링크 표시
+  // 정적 배포(조회 전용): 수집 UI 숨김. 지역 요청은 지역명 직접 입력 방식.
   ["searchRow", "collectPanel", "progress"].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.style.display = "none";
   });
-  if (window.REQUEST_FORM_URL) {
-    const row = document.getElementById("requestRow");
-    row.style.display = "block";
+  const row = document.getElementById("requestRow");
+  row.style.display = "block";
+  if (window.REGION_ENDPOINT) {
+    row.innerHTML =
+      `🙋 우리 동네도 조사해주세요:<br>
+       <div style="display:flex;gap:4px;margin-top:3px;">
+         <input id="regReq" placeholder="지역명 (예: 신촌역, 망원동)"
+                style="flex:1;padding:4px;font-size:13px;">
+         <button onclick="requestRegionInput()" style="padding:4px 10px;cursor:pointer;">요청</button>
+       </div>`;
+  } else if (window.REQUEST_FORM_URL) {
     row.innerHTML = `🙋 <a href="${window.REQUEST_FORM_URL}" target="_blank">우리 동네도 조사해 달라고 요청하기</a>`;
+  } else {
+    row.style.display = "none";
   }
 } else {
   document.getElementById("qBtn").onclick = searchRegion;

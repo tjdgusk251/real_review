@@ -20,6 +20,11 @@
     "collected_at": "2026-07-03 11:17:15"
   },
   {
+    "region": "영등포시장",
+    "radius_m": 300,
+    "collected_at": "2026-07-06 16:39:22"
+  },
+  {
     "region": "오목교역",
     "radius_m": 500,
     "collected_at": "2026-07-03 12:07:23"
