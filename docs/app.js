@@ -302,8 +302,9 @@ function infoHtml(p) {
   const fb = window.STATIC_MODE ? "" : `
       <div style="margin-top:6px;padding-top:6px;border-top:1px solid #eee;font-size:11px;"
            id="fb-${p.kakao_id}">
-        내가 먹어본 평가:
+        내가 먹어본 평가:<br>
         <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','찐맛집')">👍 찐맛집</button>
+        <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','맛있음')">😋 맛있음</button>
         <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','괜찮음')">🙂 괜찮음</button>
         <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','별로')">👎 별로</button>
       </div>`;
