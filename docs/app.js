@@ -75,9 +75,12 @@ async function init() {
   if (regions.length) loadRegion(regions[0].region);
 }
 
+let currentRegion = null;
+
 async function loadRegion(region) {
   const data = await (await fetch(dataUrl(region))).json();
   allPlaces = data.places;
+  currentRegion = region;
 
   document.getElementById("meta").textContent =
     `${data.region} 반경 ${data.radius_m}m · ${data.count}곳 · 수집 ${data.collected_at}`;
@@ -295,6 +298,15 @@ function infoHtml(p) {
          <span style="color:#888; font-size:11px">${(dc.keywords || []).slice(0, 4).join(" · ")}</span>
        </div>`
     : `<div style="margin:4px 0; color:#999">다이닝코드에 등록되지 않은 곳</div>`;
+  // 판정 피드백 버튼 (내 평가를 정답 데이터로 축적) — 배포본(서버 없음)에선 숨김
+  const fb = window.STATIC_MODE ? "" : `
+      <div style="margin-top:6px;padding-top:6px;border-top:1px solid #eee;font-size:11px;"
+           id="fb-${p.kakao_id}">
+        내가 먹어본 평가:
+        <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','찐맛집')">👍 찐맛집</button>
+        <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','괜찮음')">🙂 괜찮음</button>
+        <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','별로')">👎 별로</button>
+      </div>`;
   return `
       <b>${p.name}</b><br>
       <span style="color:#777">${p.category}</span><br>
@@ -304,7 +316,42 @@ function infoHtml(p) {
       ${dcBlock}
       중심에서 ${p.dist_m}m ·
       <a href="${p.kakao_url}" target="_blank">카카오맵</a>
-      ${dc ? `· <a href="https://www.diningcode.com/profile.php?rid=${dc.v_rid}" target="_blank">다이닝코드</a>` : ""}`;
+      ${dc ? `· <a href="https://www.diningcode.com/profile.php?rid=${dc.v_rid}" target="_blank">다이닝코드</a>` : ""}
+      ${fb}`;
+}
+
+// 지역 조사 요청 → 서버가 data/region_requests.jsonl 에 축적
+async function requestRegion(query) {
+  const note = prompt(`"${query}" 지역 조사를 요청합니다. 남길 말이 있으면 적어주세요 (선택):`, "");
+  if (note === null) return;   // 취소
+  try {
+    await fetch("/api/region_request", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ query, note }),
+    });
+    alert("요청이 접수됐습니다. 나중에 수집 목록에 반영됩니다.");
+  } catch (e) {
+    alert("요청 저장 실패 (서버 꺼짐?)");
+  }
+}
+
+// 판정 피드백 전송 → 서버가 data/feedback.jsonl 에 축적 (정답 표본)
+async function sendFeedback(kakaoId, userSays) {
+  const p = allPlaces.find(x => x.kakao_id === kakaoId);
+  const box = document.getElementById("fb-" + kakaoId);
+  try {
+    await fetch("/api/feedback", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        kakao_id: kakaoId, name: p.name, region: currentRegion,
+        category: p.category, verdict_now: p.analysis ? p.analysis.verdict : null,
+        jjin: p.analysis ? p.analysis.jjin : null, user_says: userSays,
+      }),
+    });
+    if (box) box.innerHTML = `<span style="color:#2b8a3e">평가 저장됨 (${userSays}) — 고마워요!</span>`;
+  } catch (e) {
+    if (box) box.innerHTML = `<span style="color:#c92a2a">저장 실패 (서버 꺼짐?)</span>`;
+  }
 }
 
 function showGroupPage() {
@@ -390,9 +437,16 @@ async function searchRegion() {
     const res = await (await fetch(`/api/search?q=${encodeURIComponent(q)}`)).json();
     box.innerHTML = "";
     if (!res.candidates || res.candidates.length === 0) {
-      box.innerHTML = `<div class="sub" style="padding:4px">결과 없음</div>`;
+      box.innerHTML = `<div class="sub" style="padding:4px">결과 없음 —
+        <a href="#" onclick="requestRegion('${q}');return false;">이 지역 조사 요청하기</a></div>`;
       return;
     }
+    // 항상 하단에 "이 지역 조사 요청" 안내 (미수집 지역 건의용)
+    const reqNote = document.createElement("div");
+    reqNote.className = "sub";
+    reqNote.style.padding = "3px";
+    reqNote.innerHTML = `찾는 곳이 없나요? <a href="#" onclick="requestRegion('${q}');return false;">이 지역 조사 요청</a>`;
+    box.appendChild(reqNote);
     res.candidates.forEach(c => {
       const div = document.createElement("div");
       div.className = "item";
