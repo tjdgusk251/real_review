@@ -421,14 +421,22 @@ function updatePreviewCircle(fitBounds = true) {
   });
 
   // 드래그 가능한 중심 핀 — 끌어서 원 위치를 임의로 옮김
+  // 카카오 마커는 연속 drag 이벤트가 없어, 드래그 중 위치를 폴링해 원을 실시간 추종시킨다.
   if (!previewMarker) {
     previewMarker = new kakao.maps.Marker({ position: center, draggable: true });
     previewMarker.setMap(map);
-    kakao.maps.event.addListener(previewMarker, "drag", () => {
+    let dragTimer = null;
+    kakao.maps.event.addListener(previewMarker, "dragstart", () => {
+      dragTimer = setInterval(() => {
+        if (previewCircle) previewCircle.setPosition(previewMarker.getPosition());
+      }, 16);   // ~60fps 로 원이 핀을 따라감
+    });
+    kakao.maps.event.addListener(previewMarker, "dragend", () => {
+      clearInterval(dragTimer);
       const pos = previewMarker.getPosition();
-      selectedCandidate.lat = pos.getLat();   // 수집 좌표 갱신
+      selectedCandidate.lat = pos.getLat();   // 수집 좌표 확정
       selectedCandidate.lon = pos.getLng();
-      if (previewCircle) previewCircle.setPosition(pos);   // 원만 따라 이동
+      if (previewCircle) previewCircle.setPosition(pos);
     });
   } else {
     previewMarker.setPosition(center);
