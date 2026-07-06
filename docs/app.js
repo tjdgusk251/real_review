@@ -400,10 +400,13 @@ function openInfo(p) {
 
 // ---------- 새 지역 검색·수집 (서버 API 사용) ----------
 let selectedCandidate = null;
-let previewCircle = null;   // 수집 범위 미리보기 원
+let previewCircle = null;    // 수집 범위 미리보기 원
+let previewMarker = null;    // 원 중심의 드래그 핀 (임의 위치로 이동)
 
-// 선택한 후보 + 현재 반경으로 미리보기 원을 그리고, 원 전체가 보이게 지도를 맞춘다
-function updatePreviewCircle() {
+// 선택한 후보 + 현재 반경으로 미리보기 원을 그린다.
+// fitBounds=true 면 원 전체가 보이게 지도를 맞춤(후보 선택·반경 변경 시).
+// 드래그 중에는 지도를 리센터하지 않기 위해 fitBounds=false.
+function updatePreviewCircle(fitBounds = true) {
   if (!selectedCandidate) return;
   const { lat, lon } = selectedCandidate;
   const radius = currentRadius();
@@ -417,16 +420,33 @@ function updatePreviewCircle() {
     fillColor: "#f76707", fillOpacity: 0.08,
   });
 
-  // 원이 화면에 꽉 차게: 반경만큼 상하좌우로 벌린 경계로 지도 맞춤
-  const dLat = radius / 111320;
-  const dLon = radius / (111320 * Math.cos(lat * Math.PI / 180));
-  map.setBounds(new kakao.maps.LatLngBounds(
-    new kakao.maps.LatLng(lat - dLat, lon - dLon),
-    new kakao.maps.LatLng(lat + dLat, lon + dLon)));
+  // 드래그 가능한 중심 핀 — 끌어서 원 위치를 임의로 옮김
+  if (!previewMarker) {
+    previewMarker = new kakao.maps.Marker({ position: center, draggable: true });
+    previewMarker.setMap(map);
+    kakao.maps.event.addListener(previewMarker, "drag", () => {
+      const pos = previewMarker.getPosition();
+      selectedCandidate.lat = pos.getLat();   // 수집 좌표 갱신
+      selectedCandidate.lon = pos.getLng();
+      if (previewCircle) previewCircle.setPosition(pos);   // 원만 따라 이동
+    });
+  } else {
+    previewMarker.setPosition(center);
+    previewMarker.setMap(map);
+  }
+
+  if (fitBounds) {
+    const dLat = radius / 111320;
+    const dLon = radius / (111320 * Math.cos(lat * Math.PI / 180));
+    map.setBounds(new kakao.maps.LatLngBounds(
+      new kakao.maps.LatLng(lat - dLat, lon - dLon),
+      new kakao.maps.LatLng(lat + dLat, lon + dLon)));
+  }
 }
 
 function clearPreviewCircle() {
   if (previewCircle) { previewCircle.setMap(null); previewCircle = null; }
+  if (previewMarker) { previewMarker.setMap(null); previewMarker = null; }
 }
 
 async function searchRegion() {
@@ -456,8 +476,9 @@ async function searchRegion() {
       div.onclick = () => {
         selectedCandidate = { ...c, label: q };
         box.innerHTML = "";
-        document.getElementById("collectTarget").textContent =
-          `${c.name} 주변을 수집합니다`;
+        document.getElementById("collectTarget").innerHTML =
+          `${c.name} 주변을 수집합니다<br>` +
+          `<span style="font-weight:normal;color:#f76707;font-size:11px">📍 핀을 끌어 위치를 옮길 수 있어요</span>`;
         document.getElementById("collectPanel").style.display = "block";
         updatePreviewCircle();   // 수집 범위 미리보기 원 표시 + 지도 맞춤
       };
