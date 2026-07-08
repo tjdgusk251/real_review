@@ -302,13 +302,15 @@ function infoHtml(p) {
   // 로컬: 서버 API / 배포본: 외부 엔드포인트(설정 시). 둘 다 없으면 숨김.
   const fbAvailable = !window.STATIC_MODE || window.FEEDBACK_ENDPOINT;
   const fb = !fbAvailable ? "" : `
-      <div style="margin-top:6px;padding-top:6px;border-top:1px solid #eee;font-size:11px;"
-           id="fb-${p.kakao_id}">
-        내가 먹어본 평가:<br>
-        <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','찐맛집')">👍 찐맛집</button>
-        <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','맛있음')">😋 맛있음</button>
-        <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','괜찮음')">🙂 괜찮음</button>
-        <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','별로')">👎 별로</button>
+      <div style="margin-top:6px;padding:6px;font-size:11px;background:#fff9db;
+           border-radius:6px;" id="fb-${p.kakao_id}">
+        <b>내가 먹어본 평가</b>
+        <div style="display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;">
+          <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','찐맛집')">👍 찐맛집</button>
+          <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','맛있음')">😋 맛있음</button>
+          <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','괜찮음')">🙂 괜찮음</button>
+          <button class="fbtn" onclick="sendFeedback('${p.kakao_id}','별로')">👎 별로</button>
+        </div>
       </div>`;
   return `
       <b>${p.name}</b><br>
@@ -399,8 +401,10 @@ function showGroupPage() {
                  font-size:15px;cursor:pointer;padding:2px 8px;">▶</button>
        </div>`
     : "";
+  // max-height + 내부 스크롤: 정보창이 길어도 화면 밖으로 넘쳐 잘리지 않게
   infoWindow.setContent(
-    `<div style="padding:8px 12px; font-size:13px; min-width:220px; max-width:280px;">
+    `<div style="padding:8px 12px; font-size:13px; min-width:220px; max-width:280px;
+                 max-height:60vh; overflow-y:auto;">
        ${pager}${infoHtml(p)}
      </div>`);
   infoWindow.open(map, markers[p.kakao_id]);
