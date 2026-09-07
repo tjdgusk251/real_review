@@ -5,6 +5,11 @@
     "collected_at": "2026-07-02 20:18:36"
   },
   {
+    "region": "공덕역",
+    "radius_m": 500,
+    "collected_at": "2026-09-07 12:19:34"
+  },
+  {
     "region": "목동역",
     "radius_m": 500,
     "collected_at": "2026-07-03 01:41:58"
